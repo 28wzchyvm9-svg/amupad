@@ -1093,6 +1093,65 @@
         .nowbar { min-width: 60px; padding: 3px 7px; margin: 7px 6px 7px 0; }
         .fxbtn { padding-left: 22px; }
       }
+
+      /* ============================================================
+         PAD GRID FIT (Safari) + WAVEFORM TRIM EDITOR
+         - The svh-based width cap above under-measures the stage
+           in Safari (svh is the smallest viewport, behind the
+           floating chrome), shrinking the 4x4 grid to ~70% width.
+           Measure the stage box itself instead: main becomes a
+           size container and the grids take min(content width,
+           content height), so pads fill the available width in
+           portrait, stay square, and stay centred. Engines
+           without container units keep the svh rule above.
+         - Waveform editor styles for the sampler sheet: LCD
+           window, amber peaks, big touch handles.
+         ============================================================ */
+      main { container-type: size; }
+      #pads, #altPads { width: min(680px, 100cqw, 100cqh); }
+      #disc { width: min(680px, 100cqw, calc(100cqh - 84px)); }
+      .wavewrap { display: none; margin: 2px 0 10px; }
+      .wavewrap.show { display: block; }
+      .wavebox {
+        position: relative; height: 118px; overflow: hidden;
+        background:
+          repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, rgba(0,0,0,0) 1px 3px),
+          radial-gradient(120% 140% at 50% 0%, #181b10 0%, #0b0d08 70%);
+        border: 1px solid #050605; border-radius: 4px;
+        box-shadow: inset 0 2px 7px rgba(0,0,0,.92), 0 1px 0 rgba(255,255,255,.10);
+        touch-action: none;
+      }
+      #sampWaveCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+      .waveplay {
+        position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px;
+        background: #fff; box-shadow: 0 0 6px rgba(255,255,255,.85);
+        display: none; pointer-events: none; z-index: 2;
+      }
+      .wavehandle {
+        position: absolute; top: 0; bottom: 0; width: 38px; z-index: 3;
+        transform: translateX(-50%);
+        cursor: ew-resize; touch-action: none;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .wavehandle i {
+        position: absolute; top: 0; bottom: 0; left: 50%; width: 3px; margin-left: -1.5px;
+        background: var(--accent); box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 0 9px rgba(255,106,0,.6);
+      }
+      .wavehandle b {
+        position: relative; width: 19px; height: 36px; border-radius: 4px;
+        background:
+          repeating-linear-gradient(90deg, rgba(0,0,0,0) 0 5px, rgba(0,0,0,.32) 5px 7px, rgba(0,0,0,0) 7px 12px),
+          linear-gradient(180deg, #ff8a2a, #d64e00);
+        border: 1px solid #7a2c00;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 2px 6px rgba(0,0,0,.65);
+      }
+      .waveinfo {
+        display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+        margin-top: 7px; font-size: 12px;
+      }
+      .waveinfo .wr { font-family: "Share Tech Mono", monospace; color: var(--lcd-amber); text-shadow: 0 0 4px rgba(255,176,0,.5); }
+      .waveinfo .wg { font-weight: 700; color: var(--sub); }
+      .wavehint { font-size: 11px; color: var(--sub); font-weight: 700; line-height: 1.6; margin-top: 6px; }
     </style>
   </head>
   <body>
@@ -1274,6 +1333,19 @@
             <button class="sheetbtn" id="sampRecPlay" type="button" disabled>試聴</button>
             <button class="sheetbtn" id="sampRecUse" type="button" disabled>この音を採用</button>
             <button class="sheetbtn" id="sampRecRetry" type="button" disabled>やり直し</button>
+          </div>
+          <div class="wavewrap" id="sampWaveWrap">
+            <div class="wavebox" id="sampWaveBox">
+              <canvas id="sampWaveCanvas"></canvas>
+              <div class="waveplay" id="sampWavePlay"></div>
+              <div class="wavehandle" id="sampWaveHs" role="slider" aria-label="開始点"><i></i><b></b></div>
+              <div class="wavehandle" id="sampWaveHe" role="slider" aria-label="終了点"><i></i><b></b></div>
+            </div>
+            <div class="waveinfo"><span class="wr" id="sampWaveRange">--</span><span class="wg" id="sampWaveGain"></span></div>
+            <div class="btnrow" style="margin-top:8px">
+              <button class="sheetbtn" id="sampWaveFull" type="button">全範囲に戻す</button>
+            </div>
+            <div class="wavehint">両端のオレンジのつまみをドラッグして、使う区間を選ぶ。範囲の外は鳴らない。「試聴」は選んだ区間だけ、「この音を採用」は選んだ区間だけを切り出して、音量をそろえて保存する。</div>
           </div>
           <div class="status" id="sampRecStatus">最大30秒。声・物音・楽器の音など、そのままパッドの音になる。</div>
           <div class="status" id="sampRecDiag"></div>
@@ -3038,7 +3110,9 @@
          stopAll() is never called by tab code. */
       var sampCustom = {};      // padIdx -> { label, blob, buf, gain }
       var sampEditIdx = null;
-      var sampPending = null;   // { blob, buf, gain } waiting for 試聴/採用
+      var sampPending = null;   // { blob, buf, gain, selStart, selEnd } waiting for 試聴/採用
+      var sampWavePeaks = null; // cached max-abs envelope of the pending take, for the waveform canvas
+      var sampPreviewSrc = null, sampPlayRaf = 0;
       var sampRecState = null;  // { recorder, chunks, stream, timeout, tick, startedAt }
       var sampTracks = [0, 1, 3, 4];   // KICK / SNARE / C.HAT / O.HAT
       var sampSteps = [
@@ -3057,29 +3131,50 @@
         var c = sampCustom[idx];
         return c ? c.label : DRUM_PADS[idx].label;
       }
-      function sampNormGain(buf) {
+      // Peak of a frame range across all channels. step lets the
+      // waveform UI re-measure cheaply while a handle is dragged;
+      // the adopt path re-measures the trimmed buffer at step 1.
+      function sampPeak(buf, fromFrame, toFrame, step) {
         var peak = 0;
+        var lo = Math.max(0, fromFrame || 0);
+        var hi = Math.min(buf.length, (toFrame === undefined || toFrame === null) ? buf.length : toFrame);
+        var st = step || 1;
         for (var c = 0; c < buf.numberOfChannels; c++) {
           var d = buf.getChannelData(c);
-          for (var i = 0; i < d.length; i += 4) {
-            var v = Math.abs(d[i]);
+          for (var i = lo; i < hi; i += st) {
+            var v = d[i] < 0 ? -d[i] : d[i];
             if (v > peak) peak = v;
           }
         }
-        if (peak < 0.02) return 1;
-        if (peak > 0.92) return 0.92 / peak;          // hot take: pull down to the ceiling
-        if (peak < 0.55) return Math.min(0.89 / peak, 2.5); // quiet take: lift, capped
-        return 1;
+        return peak;
       }
-      function sampPlayBuf(buf, vol, when) {
-        if (!actx || !buf) return;
+      // Peak-normalise to about -1 dBFS (0.891), with the lift
+      // capped at +24 dB. A take whose peak sits below ~-38 dBFS
+      // is treated as silence / noise only and is NOT lifted:
+      // boosting it would just amplify the noise floor.
+      function sampGainForPeak(peak) {
+        if (!(peak > 0.012)) return 1;
+        var g = 0.891 / peak;
+        var maxG = 15.85; // +24 dB
+        return g > maxG ? maxG : g;
+      }
+      function sampNormGain(buf) {
+        return sampGainForPeak(sampPeak(buf, 0, buf.length, 4));
+      }
+      function sampPlayBuf(buf, vol, when, offset, duration) {
+        if (!actx || !buf) return null;
         var src = actx.createBufferSource();
         src.buffer = buf;
         var g = actx.createGain();
         g.gain.value = vol;
         src.connect(g);
         g.connect(shotOut());
-        try { src.start(when || 0); } catch (e) {}
+        try {
+          if (offset !== undefined && duration !== undefined) src.start(when || 0, offset, duration);
+          else if (offset !== undefined) src.start(when || 0, offset);
+          else src.start(when || 0);
+        } catch (e) {}
+        return src;
       }
       function sampDecodeBlob(blob) {
         return blob.arrayBuffer().then(function (ab) {
@@ -3389,7 +3484,199 @@
         $("sampRecPlay").disabled = !has;
         $("sampRecUse").disabled = !has;
         $("sampRecRetry").disabled = !has;
+        var w = $("sampWaveWrap");
+        if (w) w.classList.toggle("show", has);
+        if (!has) { sampStopPreview(); sampWavePeaks = null; }
+        else requestAnimationFrame(function () { sampRefreshWave(); });
       }
+      /* ----- waveform trim editor (pending take) -----
+         The pending buffer is drawn as a max-abs envelope on a
+         canvas inside an LCD-style window. Two 38px-wide handles
+         pick the start / end of the take; the area outside the
+         selection is dimmed, preview plays only the selection,
+         and 採用 trims the buffer to the selection before the
+         peak normalisation above is applied and saved. */
+      function sampComputePeaks(buf, buckets) {
+        var out = new Float32Array(buckets);
+        var frames = buf.length;
+        var chans = [];
+        for (var c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c));
+        for (var b = 0; b < buckets; b++) {
+          var sF = Math.floor(b * frames / buckets);
+          var eF = Math.max(sF + 1, Math.floor((b + 1) * frames / buckets));
+          var step = (eF - sF) > 512 ? 4 : 1;
+          var peak = 0;
+          for (var k = 0; k < chans.length; k++) {
+            var d = chans[k];
+            for (var i = sF; i < eF; i += step) {
+              var v = d[i] < 0 ? -d[i] : d[i];
+              if (v > peak) peak = v;
+            }
+          }
+          out[b] = peak;
+        }
+        return out;
+      }
+      function sampSelPeak(step) {
+        if (!sampPending) return 0;
+        var buf = sampPending.buf, sr = buf.sampleRate;
+        return sampPeak(buf, Math.floor(sampPending.selStart * sr), Math.ceil(sampPending.selEnd * sr), step || 4);
+      }
+      function sampPendingGain() {
+        if (!sampPending) return 1;
+        return sampGainForPeak(sampSelPeak(4));
+      }
+      function sampWaveUI() {
+        if (!sampPending) return;
+        var s = sampPending.selStart, e = sampPending.selEnd, dur = sampPending.buf.duration;
+        $("sampWaveRange").textContent = s.toFixed(2) + "s 〜 " + e.toFixed(2) + "s ／ 長さ " + (e - s).toFixed(2) + "s（全体 " + dur.toFixed(2) + "s）";
+        var peak = sampSelPeak(4);
+        var gEl = $("sampWaveGain");
+        if (!(peak > 0.012)) {
+          gEl.textContent = "ほぼ無音のため増幅なし";
+        } else {
+          var gdb = 20 * Math.log(sampGainForPeak(peak)) / Math.LN10;
+          gEl.textContent = "音量 " + (gdb >= 0 ? "+" : "") + gdb.toFixed(1) + "dB で正規化";
+        }
+      }
+      function sampDrawWave() {
+        if (!sampPending || !sampWavePeaks) return;
+        var box = $("sampWaveBox"), cv = $("sampWaveCanvas");
+        if (!box || !cv) return;
+        var w = box.clientWidth, h = box.clientHeight;
+        if (!w || !h) return;
+        var dpr = Math.min(2, window.devicePixelRatio || 1);
+        var W = Math.round(w * dpr), H = Math.round(h * dpr);
+        if (cv.width !== W) cv.width = W;
+        if (cv.height !== H) cv.height = H;
+        var ctx = cv.getContext("2d");
+        if (!ctx) return;
+        ctx.clearRect(0, 0, W, H);
+        var dur = sampPending.buf.duration;
+        var sX = sampPending.selStart / dur * W, eX = sampPending.selEnd / dur * W;
+        ctx.fillStyle = "rgba(255,182,46,.10)";
+        ctx.fillRect(sX, 0, Math.max(0, eX - sX), H);
+        ctx.strokeStyle = "rgba(255,255,255,.16)";
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); ctx.stroke();
+        var peaks = sampWavePeaks, n = peaks.length, mid = H / 2, ampMax = H * 0.46;
+        for (var x = 0; x < W; x++) {
+          var amp = peaks[Math.floor(x / W * n)] * ampMax;
+          if (amp < dpr * 0.6) amp = dpr * 0.6;
+          ctx.fillStyle = (x >= sX && x <= eX) ? "#ffb62e" : "#62665f";
+          ctx.fillRect(x, mid - amp, 1, amp * 2);
+        }
+        ctx.fillStyle = "rgba(0,0,0,.52)";
+        if (sX > 0) ctx.fillRect(0, 0, sX, H);
+        if (eX < W) ctx.fillRect(eX, 0, W - eX, H);
+        $("sampWaveHs").style.left = (sampPending.selStart / dur * 100) + "%";
+        $("sampWaveHe").style.left = (sampPending.selEnd / dur * 100) + "%";
+      }
+      function sampRefreshWave() { sampWaveUI(); sampDrawWave(); }
+      function sampSetSel(which, sec) {
+        if (!sampPending) return;
+        var dur = sampPending.buf.duration;
+        var minD = Math.min(0.05, dur / 4);
+        if (which === "s") sampPending.selStart = Math.min(Math.max(0, sec), sampPending.selEnd - minD);
+        else sampPending.selEnd = Math.max(Math.min(dur, sec), sampPending.selStart + minD);
+        sampRefreshWave();
+      }
+      function sampStopPreview() {
+        if (sampPreviewSrc) { try { sampPreviewSrc.stop(); } catch (e) {} sampPreviewSrc = null; }
+        if (sampPlayRaf) { cancelAnimationFrame(sampPlayRaf); sampPlayRaf = 0; }
+        var el = $("sampWavePlay");
+        if (el) el.style.display = "none";
+      }
+      function sampWavePlayhead(t0, start, end) {
+        var el = $("sampWavePlay");
+        if (!el || !actx) return;
+        el.style.display = "block";
+        function frame() {
+          if (!sampPending || !actx) { el.style.display = "none"; sampPlayRaf = 0; return; }
+          var pos = start + (actx.currentTime - t0);
+          if (pos >= end) { el.style.display = "none"; sampPlayRaf = 0; return; }
+          el.style.left = (pos / sampPending.buf.duration * 100) + "%";
+          sampPlayRaf = requestAnimationFrame(frame);
+        }
+        sampPlayRaf = requestAnimationFrame(frame);
+      }
+      function sampSliceBuffer(buf, startSec, endSec) {
+        var sr = buf.sampleRate;
+        var sF = Math.max(0, Math.floor(startSec * sr));
+        var eF = Math.min(buf.length, Math.max(sF + 1, Math.ceil(endSec * sr)));
+        var out = actx.createBuffer(buf.numberOfChannels, eF - sF, sr);
+        for (var c = 0; c < buf.numberOfChannels; c++) {
+          out.getChannelData(c).set(buf.getChannelData(c).subarray(sF, eF));
+        }
+        return out;
+      }
+      function sampBufferToWavBlob(buf) {
+        var ch = buf.numberOfChannels, frames = buf.length, sr = buf.sampleRate;
+        var bytes = 44 + frames * ch * 2;
+        var ab = new ArrayBuffer(bytes);
+        var v = new DataView(ab);
+        function wstr(o, s) { for (var k = 0; k < s.length; k++) v.setUint8(o + k, s.charCodeAt(k)); }
+        wstr(0, "RIFF"); v.setUint32(4, bytes - 8, true); wstr(8, "WAVE");
+        wstr(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+        v.setUint16(22, ch, true); v.setUint32(24, sr, true);
+        v.setUint32(28, sr * ch * 2, true); v.setUint16(32, ch * 2, true); v.setUint16(34, 16, true);
+        wstr(36, "data"); v.setUint32(40, frames * ch * 2, true);
+        var chans = [];
+        for (var c = 0; c < ch; c++) chans.push(buf.getChannelData(c));
+        var off = 44;
+        for (var i = 0; i < frames; i++) {
+          for (var k = 0; k < ch; k++) {
+            var s = Math.max(-1, Math.min(1, chans[k][i]));
+            v.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+            off += 2;
+          }
+        }
+        return new Blob([ab], { type: "audio/wav" });
+      }
+      (function sampWaveWire() {
+        var box = $("sampWaveBox");
+        if (!box) return;
+        var drag = null;
+        function secFromEvent(e) {
+          var r = box.getBoundingClientRect();
+          if (!r.width) return 0;
+          var f = (e.clientX - r.left) / r.width;
+          f = Math.max(0, Math.min(1, f));
+          return f * sampPending.buf.duration;
+        }
+        function onMove(e) { if (drag && sampPending) sampSetSel(drag, secFromEvent(e)); }
+        function onUp() {
+          drag = null;
+          window.removeEventListener("pointermove", onMove);
+          window.removeEventListener("pointerup", onUp);
+          window.removeEventListener("pointercancel", onUp);
+        }
+        function begin(which, e) {
+          if (!sampPending) return;
+          e.preventDefault();
+          sampStopPreview();
+          drag = which;
+          sampSetSel(which, secFromEvent(e));
+          window.addEventListener("pointermove", onMove);
+          window.addEventListener("pointerup", onUp);
+          window.addEventListener("pointercancel", onUp);
+        }
+        $("sampWaveHs").addEventListener("pointerdown", function (e) { begin("s", e); });
+        $("sampWaveHe").addEventListener("pointerdown", function (e) { begin("e", e); });
+        box.addEventListener("pointerdown", function (e) {
+          if (!sampPending || e.target !== $("sampWaveCanvas")) return;
+          var sec = secFromEvent(e);
+          var which = Math.abs(sec - sampPending.selStart) <= Math.abs(sec - sampPending.selEnd) ? "s" : "e";
+          begin(which, e);
+        });
+        $("sampWaveFull").addEventListener("click", function () {
+          if (!sampPending) return;
+          sampPending.selStart = 0;
+          sampPending.selEnd = sampPending.buf.duration;
+          sampRefreshWave();
+        });
+        window.addEventListener("resize", function () { if (sampPending) sampDrawWave(); });
+      })();
       function sampOpenSheet(idx) {
         if (sampRecState) sampStopRecording(true);
         sampEditIdx = idx;
@@ -3407,6 +3694,7 @@
       }
       function sampCloseSheet() {
         if (sampRecState) sampStopRecording(true);
+        sampStopPreview();
         sampPending = null;
         $("sampSheetWrap").classList.remove("show");
       }
@@ -3427,11 +3715,15 @@
       }
       function sampSetPending(blob) {
         ensureCtx();
+        sampStopPreview();
         sampSetRecStatus("読み込み中…", false);
         sampDecodeBlob(blob).then(function (r) {
-          sampPending = { blob: blob, buf: r.buf, gain: r.gain };
+          sampPending = { blob: blob, buf: r.buf, gain: r.gain, selStart: 0, selEnd: r.buf.duration };
+          sampWavePeaks = sampComputePeaks(r.buf, 1200);
           sampPendingUI();
-          sampSetRecStatus("取り込めた。試聴してよければ「この音を採用」。", false);
+          sampSetRecStatus("取り込めた。波形のつまみで使う区間を選んで、試聴してよければ「この音を採用」。採用の時に音量は自動でそろえる。", false);
+          var w = $("sampWaveWrap");
+          if (w) setTimeout(function () { try { w.scrollIntoView({ block: "nearest" }); } catch (e) {} }, 80);
         }).catch(function () {
           sampPending = null;
           sampPendingUI();
@@ -3694,7 +3986,10 @@
       $("sampRecPlay").addEventListener("click", function () {
         if (!sampPending) return;
         ensureCtx();
-        sampPlayBuf(sampPending.buf, sampPending.gain * SHOT_TRIM.drum, 0);
+        sampStopPreview();
+        var s = sampPending.selStart, e = sampPending.selEnd;
+        sampPreviewSrc = sampPlayBuf(sampPending.buf, sampPendingGain() * SHOT_TRIM.drum, 0, s, Math.max(0.03, e - s));
+        if (actx) sampWavePlayhead(actx.currentTime, s, e);
       });
       $("sampRecRetry").addEventListener("click", function () {
         sampPending = null;
@@ -3703,16 +3998,27 @@
       });
       $("sampRecUse").addEventListener("click", function () {
         if (!sampPending || sampEditIdx === null) return;
+        ensureCtx();
+        sampStopPreview();
         var idx = sampEditIdx;
         var label = sampRecLabel();
-        sampCustom[idx] = { label: label, blob: sampPending.blob, buf: sampPending.buf, gain: sampPending.gain };
-        sampIdbPut("sounds", idx, { label: label, blob: sampPending.blob });
+        // Trim to the selected range, normalise that range's peak
+        // to about -1 dBFS (lift capped at +24 dB, silence guard
+        // in sampGainForPeak), and save the trimmed WAV so the
+        // stored sound is exactly what was previewed. On restore,
+        // sampNormGain re-derives the same gain from the slice.
+        var sliced = sampSliceBuffer(sampPending.buf, sampPending.selStart, sampPending.selEnd);
+        var gain = sampGainForPeak(sampPeak(sliced, 0, sliced.length, 1));
+        var blob = sampBufferToWavBlob(sliced);
+        sampCustom[idx] = { label: label, blob: blob, buf: sliced, gain: gain };
+        sampIdbPut("sounds", idx, { label: label, blob: blob });
+        var gdb = 20 * Math.log(gain) / Math.LN10;
         sampPending = null;
         sampPendingUI();
         $("sampSheetTitle").textContent = "PAD " + (idx + 1 < 10 ? "0" : "") + (idx + 1) + " — " + label;
         $("sampSheetSub").textContent = "「" + label + "」を保存した。この端末に残るので、次に開いたときもそのまま使える。";
         $("sampLabelInput").value = label;
-        sampSetRecStatus("採用して保存した。", false);
+        sampSetRecStatus("採用して保存した（" + sliced.duration.toFixed(2) + "秒／音量 " + (gdb >= 0 ? "+" : "") + gdb.toFixed(1) + "dB 正規化）。", false);
         renderSampPads();
         ensureCtx();
         sampTrigger(idx, 0);
